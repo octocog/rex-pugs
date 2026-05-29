@@ -3,25 +3,19 @@ import '../styles/global.css';
 import pugs from '../data/pugs.json';
 
 const base = import.meta.env.BASE_URL;
-const count = Math.max(0, Math.round(Number(pugs.count ?? 0)));
 const PAD = 7;
-const padded = String(count).padStart(PAD, '0');
-const noun = count === 1 ? 'PUG' : 'PUGS';
+// Fallback only, used if the live fetch fails. The live value comes from the Sheet in the browser.
+const FALLBACK = Math.max(0, Math.round(Number(pugs.count ?? 0)));
+const CSV_URL =
+  'https://docs.google.com/spreadsheets/d/e/2PACX-1vQtOmwp2Q-D6kNK463qYPpRdb05kyvxkTD1jOwNrIxbHRe_a4OgXJl70UYf5KJ645OxrcjBUWlaiXKk/pub?gid=0&single=true&output=csv';
 
-const checked = pugs.checkedAt ? new Date(pugs.checkedAt) : null;
-let updatedStr = 'unknown';
-if (checked && !Number.isNaN(checked.valueOf())) {
-  updatedStr =
-    new Intl.DateTimeFormat('en-US', {
-      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-      timeZone: 'America/New_York',
-    }).format(checked) + ' ET';
-}
-
-const SITE_TITLE = `Rex currently has ${count} ${count === 1 ? 'pug' : 'pugs'}`;
-const SITE_DESC = `The official, auto-updating tally of how many pugs Rex has at this very moment: ${count}.`;
+const SITE_TITLE = "Rex's Official Pug Count";
+const SITE_DESC = 'The live, always current tally of how many pugs Rex has at this very moment.';
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 const ogImageURL = new URL(`${base}og.png`, Astro.site);
+
+// Reel strip: 0..9 plus a trailing 0 so the 9 to 0 roll is seamless.
+const REEL = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
 ---
 <!doctype html>
 <html lang="en">
@@ -57,7 +51,6 @@ const ogImageURL = new URL(`${base}og.png`, Astro.site);
       <div class="floor" aria-hidden="true"></div>
       <div class="bg-grid" aria-hidden="true"></div>
 
-      <!-- palms -->
       <svg class="palm palm--l" viewBox="0 0 120 200" aria-hidden="true">
         <g fill="#0a0612">
           <path d="M78,72 C52,50 26,52 4,68 C30,60 56,62 80,80 Z"/>
@@ -95,7 +88,6 @@ const ogImageURL = new URL(`${base}og.png`, Astro.site);
           <ellipse cx="100" cy="120" rx="27" ry="21" fill="#3a2f2a"/>
           <ellipse cx="100" cy="143" rx="8" ry="10" fill="#ef7a98"/>
           <ellipse cx="100" cy="110" rx="9" ry="6.5" fill="#15100c"/>
-          <!-- neon sunglasses -->
           <rect x="50" y="80" width="42" height="27" rx="9" fill="#0b0b16" stroke="#00e5ff" stroke-width="3"/>
           <rect x="108" y="80" width="42" height="27" rx="9" fill="#0b0b16" stroke="#ff2e88" stroke-width="3"/>
           <path d="M92,90 H108" stroke="#f5f5f5" stroke-width="4" stroke-linecap="round"/>
@@ -105,48 +97,113 @@ const ogImageURL = new URL(`${base}og.png`, Astro.site);
 
         <h1 class="rex">Rex currently has</h1>
 
-        <div class="counter" data-count={count} data-pad={PAD}>
-          {padded.split('').map((d) => <span class="cell">{d}</span>)}
+        <div class="counter" data-pad={PAD} data-fallback={FALLBACK} data-csv={CSV_URL}>
+          {Array.from({ length: PAD }).map(() => (
+            <span class="cell"><span class="reel">{REEL.map((n) => <span class="d">{n}</span>)}</span></span>
+          ))}
         </div>
 
-        <p class="noun">
-          {noun}
-          {count === 0 && <span class="zero-note">…the search continues</span>}
-        </p>
+        <p class="noun"><span id="noun-word">PUGS</span></p>
 
-        <p class="synced"><span class="live">●</span> LIVE · synced {updatedStr}</p>
+        <p class="synced"><span class="live">●</span> <span id="synced-text">LIVE · counting the pugs…</span></p>
       </main>
 
       <p class="foot">
-        Auto-updates hourly from Rex HQ · pug count certified ✓<br />
+        Auto-updates live from Rex HQ · pug count certified ✓<br />
         <a class="credit" href="https://www.octocog.com" target="_blank" rel="noopener">Designed and maintained by OctoCog Marketing &amp; Design</a>
       </p>
       <div class="scanlines" aria-hidden="true"></div>
     </div>
 
     <script>
-      const counter = document.querySelector('.counter') as HTMLElement | null;
+      const counter = document.querySelector('.counter');
       if (counter) {
-        const target = Number(counter.dataset.count);
-        const pad = Number(counter.dataset.pad);
-        const cells = Array.from(counter.querySelectorAll('.cell'));
-        const render = (n: number) => {
-          const s = String(n).padStart(pad, '0').slice(-pad);
-          cells.forEach((c, i) => (c.textContent = s[i]));
-        };
+        const PAD = Number(counter.dataset.pad);
+        const FALLBACK = Number(counter.dataset.fallback);
+        const CSV = counter.dataset.csv;
+        const reels = Array.from(counter.querySelectorAll('.reel'));
+        const N = reels.length;
+        const nounWord = document.getElementById('noun-word');
+        const syncedText = document.getElementById('synced-text');
         const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        if (!reduce && target > 0) {
-          const dur = 1300;
-          const t0 = performance.now();
-          render(0);
-          const frame = (t: number) => {
-            const p = Math.min(1, (t - t0) / dur);
-            const eased = 1 - Math.pow(1 - p, 3);
-            render(Math.round(eased * target));
-            if (p < 1) requestAnimationFrame(frame);
-            else { render(target); counter.classList.add('pop'); }
+
+        const setT = (i, off) => {
+          reels[i].style.transform = `translateY(${-((((off % 10) + 10) % 10) * 100)}%)`;
+        };
+        const easeOut = (x) => 1 - Math.pow(1 - x, 3);
+        const digitsOf = (v) =>
+          String(Math.max(0, Math.round(v))).padStart(PAD, '0').slice(-PAD).split('').map(Number);
+        const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+        const state = reels.map(() => ({ off: 0 }));
+
+        async function fetchCount() {
+          try {
+            const res = await fetch(CSV + '&_=' + Date.now(), { cache: 'no-store' });
+            if (!res.ok) throw 0;
+            const m = (await res.text()).match(/-?\d+/);
+            return m ? Math.max(0, parseInt(m[0], 10)) : null;
+          } catch {
+            return null;
+          }
+        }
+
+        function finish(v) {
+          const ds = digitsOf(v);
+          ds.forEach((d, i) => setT(i, d));
+          if (nounWord) nounWord.textContent = v === 1 ? 'PUG' : 'PUGS';
+          if (syncedText) syncedText.textContent = 'LIVE · pulled from Rex HQ just now';
+        }
+
+        if (reduce) {
+          fetchCount().then((v) => finish(typeof v === 'number' ? v : FALLBACK));
+        } else {
+          // Phase 1: free spin. Right-hand dials spin faster than left-hand ones.
+          const spin = reels.map((_, i) => 7 + i * 3.2); // digits per second
+          let raf = 0, last = null, spinning = true;
+          const spinFrame = (ts) => {
+            if (last === null) last = ts;
+            const dt = (ts - last) / 1000;
+            last = ts;
+            for (let i = 0; i < N; i++) {
+              state[i].off += spin[i] * dt;
+              setT(i, state[i].off);
+            }
+            if (spinning) raf = requestAnimationFrame(spinFrame);
           };
-          requestAnimationFrame(frame);
+          raf = requestAnimationFrame(spinFrame);
+
+          const fetchP = fetchCount();
+          const MINSPIN = 1100;
+
+          (async () => {
+            await delay(MINSPIN);
+            let v = await Promise.race([fetchP, delay(2200).then(() => 'TO')]);
+            if (typeof v !== 'number') v = FALLBACK;
+
+            // Phase 2: decelerate and lock. Left dials settle first, right dials spin longer.
+            spinning = false;
+            cancelAnimationFrame(raf);
+            const ds = digitsOf(v);
+            const plan = reels.map((_, i) => {
+              const O = state[i].off;
+              let f = O + (2 + i) * 10;             // right dials travel more before locking
+              f += (((ds[i] - (f % 10)) % 10) + 10) % 10; // land exactly on the target digit
+              return { O, f, dur: 650 + i * 220 };  // right dials take longer to settle
+            });
+            const t0 = performance.now();
+            const settleFrame = (ts) => {
+              let done = true;
+              for (let i = 0; i < N; i++) {
+                const p = Math.min(1, (ts - t0) / plan[i].dur);
+                setT(i, plan[i].O + (plan[i].f - plan[i].O) * easeOut(p));
+                if (p < 1) done = false;
+              }
+              if (done) finish(v);
+              else requestAnimationFrame(settleFrame);
+            };
+            requestAnimationFrame(settleFrame);
+          })();
         }
       }
     </script>

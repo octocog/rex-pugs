@@ -164,8 +164,6 @@ body {
     inset 0 0 24px rgba(0,0,0,.8);
 }
 .cell {
-  display: grid;
-  place-items: center;
   flex: 1 1 0;
   min-width: 0;
   max-width: 4.4rem;
@@ -178,13 +176,26 @@ body {
   font-weight: 900;
   font-size: clamp(1.4rem, 6.4vw, 3.6rem);
   line-height: 1;
+  position: relative;
+  overflow: hidden;
+}
+/* Each cell is a window; the reel is a vertical strip of digits that slides */
+.reel {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+.reel .d {
+  height: 100%;
+  display: grid;
+  place-items: center;
   color: #f4f7ff;
-  /* chromatic-aberration split — the hit-counter signature, Miami-fied */
+  font-variant-numeric: tabular-nums;
+  /* chromatic-aberration split, the hit-counter signature, Miami-fied */
   text-shadow:
     -2px 0 0 rgba(255,46,136,.9),
      2px 0 0 rgba(0,229,255,.9),
      0 0 12px rgba(255,255,255,.45);
-  font-variant-numeric: tabular-nums;
 }
 
 /* PUG / PUGS */
